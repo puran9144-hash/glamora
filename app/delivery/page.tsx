@@ -1,0 +1,157 @@
+"use client";
+
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { supabase } from "@/lib/supabase";
+import { Bike, MapPin, PackageCheck, Phone, RefreshCw, LogIn, LogOut, Clock3, CheckCircle2, Navigation, AlertCircle } from "lucide-react";
+
+type Delivery = {
+  id: string;
+  order_id: string;
+  delivery_status: "pending" | "assigned" | "picked_up" | "delivered" | "failed" | "cancelled";
+  assigned_at: string | null;
+  picked_up_at: string | null;
+  delivered_at: string | null;
+  orders?: {
+    id: string;
+    order_number: string;
+    grand_total: number;
+    delivery_address: Record<string, any> | string;
+    order_status: string;
+  } | null;
+};
+
+const money = (n: number) => "₹" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+const addressText = (value: any) => {
+  if (!value) return "Address not available";
+  if (typeof value === "string") return value;
+  return [value.full_name, value.phone, value.address_line || value.address, value.landmark, value.city, value.state, value.pincode]
+    .filter(Boolean).join(", ") || "Address not available";
+};
+
+export default function GlamoraDeliveryPartnerApp() {
+  const [session, setSession] = useState<any>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [rows, setRows] = useState<Delivery[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState("");
+  const [notice, setNotice] = useState("");
+  const [isPartner, setIsPartner] = useState(false);
+
+  const loadDeliveries = useCallback(async (uid: string) => {
+    const client = supabase;
+    if (!client) { setNotice("Database connection is not configured."); setLoading(false); return; }
+    setLoading(true);
+    const role = await client.from("user_roles").select("role").eq("user_id", uid).eq("role", "delivery_partner").maybeSingle();
+    if (role.error || !role.data) {
+      setIsPartner(false); setRows([]);
+      setNotice("This account is not registered as a GLAMORA delivery partner yet. Ask Founder Admin to assign the delivery_partner role.");
+      setLoading(false); return;
+    }
+    setIsPartner(true);
+    const result = await client.from("deliveries")
+      .select("id,order_id,delivery_status,assigned_at,picked_up_at,delivered_at,orders!deliveries_order_id_fkey(id,order_number,grand_total,delivery_address,order_status)")
+      .eq("delivery_partner_id", uid)
+      .order("created_at", { ascending: false });
+    if (result.error) setNotice(result.error.message);
+    else { setRows((result.data || []) as unknown as Delivery[]); setNotice(""); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const client = supabase;
+    if (!client) { setNotice("Database connection is not configured."); setLoading(false); return; }
+    let alive = true;
+    client.auth.getSession().then(({ data }) => {
+      if (!alive) return;
+      setSession(data.session);
+      if (data.session?.user) void loadDeliveries(data.session.user.id);
+      else setLoading(false);
+    });
+    const { data: listener } = client.auth.onAuthStateChange((_event, next) => {
+      setSession(next);
+      if (next?.user) void loadDeliveries(next.user.id);
+      else { setRows([]); setIsPartner(false); setLoading(false); }
+    });
+    return () => { alive = false; listener.subscription.unsubscribe(); };
+  }, [loadDeliveries]);
+
+  async function signIn(e: FormEvent) {
+    e.preventDefault();
+    const client = supabase;
+    if (!client) return setNotice("Database connection is not configured.");
+    setBusyId("login"); setNotice("");
+    const { error } = await client.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) setNotice(error.message);
+    setBusyId("");
+  }
+
+  async function updateStatus(row: Delivery, next: Delivery["delivery_status"]) {
+    const client = supabase;
+    if (!client || !session?.user) return;
+    setBusyId(row.id); setNotice("");
+    const patch: Record<string, any> = { delivery_status: next, updated_at: new Date().toISOString() };
+    if (next === "picked_up") patch.picked_up_at = new Date().toISOString();
+    if (next === "delivered") patch.delivered_at = new Date().toISOString();
+    const { error } = await client.from("deliveries").update(patch).eq("id", row.id).eq("delivery_partner_id", session.user.id);
+    if (error) setNotice(error.message);
+    else await loadDeliveries(session.user.id);
+    setBusyId("");
+  }
+
+  async function signOut() { const client = supabase; if (client) await client.auth.signOut(); }
+
+  if (!session) return (
+    <main className="min-h-screen bg-[#f8f5f1] flex items-center justify-center p-5">
+      <section className="w-full max-w-md rounded-3xl bg-white p-8 shadow-xl border border-[#eadfda]">
+        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#701d3b] text-[#f4dcae]"><Bike size={32}/></div>
+        <p className="text-center text-xs tracking-[.28em] text-[#a07855]">GLAMORA • DELIVERY</p>
+        <h1 className="mt-2 text-center text-3xl font-semibold text-[#4c2035]">Partner Login</h1>
+        <p className="mt-2 text-center text-sm text-gray-500">Sign in to view and manage your assigned deliveries.</p>
+        <form onSubmit={signIn} className="mt-7 space-y-4">
+          <input className="w-full rounded-xl border p-3 outline-none focus:border-[#8b3154]" type="email" required placeholder="Email address" value={email} onChange={e=>setEmail(e.target.value)}/>
+          <input className="w-full rounded-xl border p-3 outline-none focus:border-[#8b3154]" type="password" required placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)}/>
+          <button disabled={busyId==="login"} className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#701d3b] p-3 font-semibold text-white disabled:opacity-60"><LogIn size={18}/>{busyId==="login"?"Signing in…":"Login"}</button>
+        </form>
+        {notice && <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">{notice}</p>}
+        <p className="mt-6 text-center text-xs text-gray-400">Delivery partner accounts are created and assigned by Founder Admin.</p>
+      </section>
+    </main>
+  );
+
+  return (
+    <main className="min-h-screen bg-[#f8f5f1]">
+      <header className="sticky top-0 z-10 border-b bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-4">
+          <div className="flex items-center gap-3"><div className="rounded-xl bg-[#701d3b] p-2 text-[#f4dcae]"><Bike/></div><div><p className="text-xs tracking-[.2em] text-[#a07855]">GLAMORA</p><h1 className="text-lg font-semibold text-[#4c2035]">Delivery Partner</h1></div></div>
+          <div className="flex gap-2"><button onClick={()=>session.user&&loadDeliveries(session.user.id)} className="rounded-xl border p-2 text-gray-600" title="Refresh"><RefreshCw size={18}/></button><button onClick={signOut} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><LogOut size={16}/> Logout</button></div>
+        </div>
+      </header>
+      <div className="mx-auto max-w-5xl px-4 py-7">
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[{label:"Assigned",value:rows.filter(x=>["pending","assigned"].includes(x.delivery_status)).length},{label:"Picked Up",value:rows.filter(x=>x.delivery_status==="picked_up").length},{label:"Delivered",value:rows.filter(x=>x.delivery_status==="delivered").length},{label:"Total Tasks",value:rows.length}].map(x=><div key={x.label} className="rounded-2xl border border-[#eadfda] bg-white p-4"><p className="text-xs text-gray-500">{x.label}</p><p className="mt-1 text-2xl font-semibold text-[#701d3b]">{x.value}</p></div>)}
+        </div>
+        <div className="mb-5 flex items-center justify-between"><div><p className="text-xs tracking-[.2em] text-[#a07855]">YOUR WORK</p><h2 className="text-2xl font-semibold text-[#4c2035]">My Deliveries</h2></div><span className="rounded-full bg-[#f0e4e7] px-3 py-1 text-xs text-[#701d3b]">{isPartner?"Partner verified":"Checking access"}</span></div>
+        {notice && <div className="mb-4 flex gap-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-800"><AlertCircle size={18} className="shrink-0"/>{notice}</div>}
+        {loading ? <div className="rounded-2xl bg-white p-10 text-center text-gray-500">Loading assigned deliveries…</div> : rows.length===0 ? <div className="rounded-2xl border border-dashed border-[#d8c5ca] bg-white p-10 text-center"><PackageCheck className="mx-auto text-[#a07855]" size={36}/><h3 className="mt-3 text-lg font-semibold text-[#4c2035]">No deliveries assigned</h3><p className="mt-1 text-sm text-gray-500">New tasks assigned by GLAMORA Founder Admin will appear here.</p></div> :
+          <div className="space-y-4">{rows.map(row=>{
+            const order=row.orders; const addr=addressText(order?.delivery_address);
+            const status=row.delivery_status;
+            return <article key={row.id} className="rounded-2xl border border-[#eadfda] bg-white p-5 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs text-gray-400">ORDER</p><h3 className="text-xl font-semibold text-[#4c2035]">{order?.order_number || row.order_id.slice(0,8)}</h3><p className="mt-1 text-sm text-gray-500">{money(order?.grand_total||0)}</p></div><span className="rounded-full bg-[#f5edf0] px-3 py-1 text-xs font-semibold capitalize text-[#701d3b]">{status.replaceAll("_"," ")}</span></div>
+              <div className="mt-4 flex gap-3 rounded-xl bg-[#faf7f4] p-3"><MapPin className="mt-1 shrink-0 text-[#8b3154]" size={19}/><div className="min-w-0"><p className="text-xs text-gray-500">DELIVERY ADDRESS</p><p className="mt-1 text-sm text-gray-800">{addr}</p><a className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-[#8b3154]" target="_blank" rel="noreferrer" href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addr)}`}><Navigation size={14}/> Open in Maps</a></div></div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {(["pending","assigned"].includes(status)) && <button disabled={busyId===row.id} onClick={()=>updateStatus(row,"picked_up")} className="rounded-xl bg-[#701d3b] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{busyId===row.id?"Updating…":"Mark Picked Up"}</button>}
+                {status==="picked_up" && <button disabled={busyId===row.id} onClick={()=>updateStatus(row,"delivered")} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"><CheckCircle2 size={17}/>{busyId===row.id?"Updating…":"Mark Delivered"}</button>}
+                {status==="delivered" && <span className="flex items-center gap-2 rounded-xl bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800"><CheckCircle2 size={17}/> Delivery completed</span>}
+                {status==="failed" && <span className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-700">Contact Founder Admin for next action</span>}
+                {status==="cancelled" && <span className="rounded-xl bg-gray-100 px-4 py-2.5 text-sm text-gray-600">Order cancelled</span>}
+              </div>
+              <p className="mt-3 flex items-center gap-1 text-xs text-gray-400"><Clock3 size={13}/> Assigned {row.assigned_at?new Date(row.assigned_at).toLocaleString("en-IN"):"time not recorded"}</p>
+            </article>;
+          })}</div>}
+        <p className="mt-8 text-center text-xs text-gray-400">GLAMORA Delivery • Customer address is shown only for your assigned orders.</p>
+      </div>
+    </main>
+  );
+}
