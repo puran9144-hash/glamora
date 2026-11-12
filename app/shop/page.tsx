@@ -38,45 +38,48 @@ export default function GlamoraStorefront() {
   const [ordersOpen,setOrdersOpen] = useState(false);
 
   useEffect(()=>{ let alive=true; (async()=>{
-    if(!supabase){ if(alive){setNotice("Store database is not configured yet.");setLoading(false);} return; }
+    const client = supabase;
+    if(!client){ if(alive){setNotice("Store database is not configured yet.");setLoading(false);} return; }
     const [c,p,city] = await Promise.all([
-      supabase.from("categories").select("id,name,slug,sort_order").eq("is_active",true).order("sort_order"),
-      supabase.from("products").select("id,name,sku,category_id,brand,description,material,colour,size,selling_price,compare_at_price,approval_status,is_active,is_featured,product_type,slug").eq("is_active",true).eq("approval_status","approved").order("is_featured",{ascending:false}).order("created_at",{ascending:false}).limit(150),
-      supabase.from("cities").select("id,name").eq("is_active",true).order("name")
+      client.from("categories").select("id,name,slug,sort_order").eq("is_active",true).order("sort_order"),
+      client.from("products").select("id,name,sku,category_id,brand,description,material,colour,size,selling_price,compare_at_price,approval_status,is_active,is_featured,product_type,slug").eq("is_active",true).eq("approval_status","approved").order("is_featured",{ascending:false}).order("created_at",{ascending:false}).limit(150),
+      client.from("cities").select("id,name").eq("is_active",true).order("name")
     ]);
     if(!alive)return;
     if(c.error) setNotice(c.error.message); else setCategories(c.data||[]);
     if(p.error) setNotice(p.error.message); else {
       setProducts(p.data||[]);
       const ids=(p.data||[]).map((x:Row)=>x.id);
-      if(ids.length){ const m=await supabase.from("product_media").select("product_id,media_url,sort_order").in("product_id",ids).order("sort_order"); if(alive&&!m.error){const map:Record<string,string>={}; (m.data||[]).forEach((x:Row)=>{if(!map[x.product_id])map[x.product_id]=x.media_url;});setMedia(map);} }
+      if(ids.length){ const m=await client.from("product_media").select("product_id,media_url,sort_order").in("product_id",ids).order("sort_order"); if(alive&&!m.error){const map:Record<string,string>={}; (m.data||[]).forEach((x:Row)=>{if(!map[x.product_id])map[x.product_id]=x.media_url;});setMedia(map);} }
     }
     if(!city.error)setCities(city.data||[]);
     setLoading(false);
   })(); return ()=>{alive=false;}; },[]);
 
   useEffect(()=>{
-    if(!supabase)return;
-    supabase.auth.getSession().then(({data})=>setCustomer(data.session?.user||null));
-    const {data:{subscription}}=supabase.auth.onAuthStateChange((_event,session)=>setCustomer(session?.user||null));
+    const client = supabase;
+    if(!client)return;
+    client.auth.getSession().then(({data})=>setCustomer(data.session?.user||null));
+    const {data:{subscription}}=client.auth.onAuthStateChange((_event,session)=>setCustomer(session?.user||null));
     return ()=>subscription.unsubscribe();
   },[]);
   useEffect(()=>{
-    if(!supabase||!customer)return;
+    const client = supabase;
+    if(!client||!customer)return;
     let active=true;
-    const load=async()=>{const {data,error}=await supabase.from("orders").select("id,order_number,order_status,payment_status,grand_total,placed_at,deliveries(delivery_status)").eq("customer_id",customer.id).order("placed_at",{ascending:false}).limit(20);if(active&&!error)setOrders(data||[]);};
+    const load=async()=>{const {data,error}=await client.from("orders").select("id,order_number,order_status,payment_status,grand_total,placed_at,deliveries(delivery_status)").eq("customer_id",customer.id).order("placed_at",{ascending:false}).limit(20);if(active&&!error)setOrders(data||[]);};
     void load();
-    const channel=supabase.channel(`customer-orders-${customer.id}`).on("postgres_changes",{event:"*",schema:"public",table:"orders",filter:`customer_id=eq.${customer.id}`},()=>void load()).on("postgres_changes",{event:"*",schema:"public",table:"deliveries"},()=>void load()).subscribe();
-    return ()=>{active=false;void supabase.removeChannel(channel);};
+    const channel=client.channel(`customer-orders-${customer.id}`).on("postgres_changes",{event:"*",schema:"public",table:"orders",filter:`customer_id=eq.${customer.id}`},()=>void load()).on("postgres_changes",{event:"*",schema:"public",table:"deliveries"},()=>void load()).subscribe();
+    return ()=>{active=false;void client.removeChannel(channel);};
   },[customer]);
   async function submitAuth(e:React.FormEvent){
-    e.preventDefault();if(!supabase)return;setAuthBusy(true);setNotice("");
+    e.preventDefault();const client=supabase;if(!client)return;setAuthBusy(true);setNotice("");
     const result=authMode==="signup"
-      ? await supabase.auth.signUp({email:authEmail.trim(),password:authPassword,options:{data:{full_name:authName,phone:authPhone}}})
-      : await supabase.auth.signInWithPassword({email:authEmail.trim(),password:authPassword});
+      ? await client.auth.signUp({email:authEmail.trim(),password:authPassword,options:{data:{full_name:authName,phone:authPhone}}})
+      : await client.auth.signInWithPassword({email:authEmail.trim(),password:authPassword});
     if(result.error)setNotice(result.error.message);
     else if(authMode==="signup"){
-      if(result.data.user){await supabase.from("profiles").upsert({id:result.data.user.id,full_name:authName,phone:authPhone},{onConflict:"id"});}
+      if(result.data.user){await client.from("profiles").upsert({id:result.data.user.id,full_name:authName,phone:authPhone},{onConflict:"id"});}
       setNotice("Account created. If email confirmation is enabled, verify your email and then log in.");
       if(result.data.session)setAuthOpen(false);
     }else{setCustomer(result.data.user);setAuthOpen(false);setAuthPassword("");}
@@ -89,9 +92,9 @@ export default function GlamoraStorefront() {
     setCartOpen(false);setCheckoutOpen(true);
   }
   async function placeOrder(e:React.FormEvent){
-    e.preventDefault();if(!supabase||!customer)return;setCheckoutBusy(true);setNotice("");
+    e.preventDefault();const client=supabase;if(!client||!customer)return;setCheckoutBusy(true);setNotice("");
     const items=Object.values(cart).map(x=>({product_id:x.product.id,quantity:x.qty}));
-    const {data,error}=await supabase.rpc("place_customer_order",{p_items:items,p_delivery_address:address});
+    const {data,error}=await client.rpc("place_customer_order",{p_items:items,p_delivery_address:address});
     if(error)setNotice(error.message);
     else{setCart({});setCheckoutOpen(false);setOrdersOpen(true);setNotice(`Order ${data.order_number} successfully placed. Pay on delivery: ${money(data.grand_total)}.`);}
     setCheckoutBusy(false);
