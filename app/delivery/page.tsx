@@ -45,16 +45,80 @@ export default function GlamoraDeliveryPartnerApp() {
   useEffect(()=>{
     const widgetId = process.env.NEXT_PUBLIC_MSG91_WIDGET_ID;
     const tokenAuth = process.env.NEXT_PUBLIC_MSG91_WIDGET_TOKEN;
-    if (!widgetId || !tokenAuth) { setNotice("MSG91 setup pending: add Widget ID and Widget Token in Vercel Environment Variables."); return; }
+    if (!widgetId || !tokenAuth) {
+      setWidgetReady(false);
+      setNotice("MSG91 setup pending: add Widget ID and Widget Token in Vercel Environment Variables.");
+      return;
+    }
+
     const w = window as any;
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let readyTimeout: ReturnType<typeof setTimeout> | undefined;
+
     w.__glamoraMsg91Config = {
-      widgetId, tokenAuth, identifier: "", exposeMethods: true,
-      success: (_data: any) => {}, failure: (err: any) => setNotice(err?.message || "MSG91 verification failed. Please retry.")
+      widgetId,
+      tokenAuth,
+      identifier: "",
+      exposeMethods: true,
+      success: (_data: any) => {},
+      failure: (err: any) => setNotice(err?.message || "MSG91 verification failed. Please retry.")
     };
-    const existing = document.querySelector('script[data-glamora-msg91="1"]') as HTMLScriptElement | null;
-    const init = () => { try { w.initSendOTP(w.__glamoraMsg91Config); setWidgetReady(true); } catch { setNotice("MSG91 widget load nahi hua. Page refresh karein."); } };
-    if (existing) { if (w.initSendOTP) init(); else existing.addEventListener("load", init, { once: true }); }
-    else { const script=document.createElement("script"); script.src="https://verify.msg91.com/otp-provider.js"; script.async=true; script.dataset.glamoraMsg91="1"; script.onload=init; script.onerror=()=>setNotice("MSG91 SDK load nahi hua."); document.body.appendChild(script); }
+
+    const checkReady = () => {
+      if (cancelled) return;
+      if (typeof w.sendOtp === "function" && typeof w.verifyOtp === "function") {
+        setWidgetReady(true);
+        setNotice("");
+        if (pollTimer) clearInterval(pollTimer);
+        if (readyTimeout) clearTimeout(readyTimeout);
+      }
+    };
+
+    const init = () => {
+      if (cancelled) return;
+      try {
+        if (typeof w.initSendOTP !== "function") {
+          setNotice("MSG91 SDK load hua, lekin initSendOTP available nahi hai. MSG91 SDK settings check karein.");
+          return;
+        }
+        w.initSendOTP(w.__glamoraMsg91Config);
+        // MSG91 exposes sendOtp/verifyOtp asynchronously after widget initialization.
+        checkReady();
+        pollTimer = setInterval(checkReady, 250);
+        readyTimeout = setTimeout(() => {
+          if (!cancelled && !(typeof w.sendOtp === "function" && typeof w.verifyOtp === "function")) {
+            setWidgetReady(false);
+            setNotice("MSG91 widget initialize nahi hua. Widget ID, Token aur domain settings check karein.");
+          }
+        }, 12000);
+      } catch (err: any) {
+        setWidgetReady(false);
+        setNotice(err?.message || "MSG91 widget initialize nahi hua. Page refresh karein.");
+      }
+    };
+
+    let script = document.querySelector('script[data-glamora-msg91="1"]') as HTMLScriptElement | null;
+    if (typeof w.initSendOTP === "function") {
+      init();
+    } else if (script) {
+      script.addEventListener("load", init, { once: true });
+      if (script.dataset.loaded === "true") init();
+    } else {
+      script = document.createElement("script");
+      script.src = "https://verify.msg91.com/otp-provider.js";
+      script.async = true;
+      script.dataset.glamoraMsg91 = "1";
+      script.onload = () => { script!.dataset.loaded = "true"; init(); };
+      script.onerror = () => setNotice("MSG91 SDK load nahi hua. Internet connection aur MSG91 settings check karein.");
+      document.body.appendChild(script);
+    }
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearInterval(pollTimer);
+      if (readyTimeout) clearTimeout(readyTimeout);
+    };
   },[]);
 
   useEffect(()=>{
